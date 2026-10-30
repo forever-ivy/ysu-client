@@ -1,6 +1,15 @@
 #!/bin/sh
 # ysu —— 燕大终端 CLI 启动器。首次运行或源码更新后自动打包。
-DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+# 先解析符号链接(如 /usr/local/bin/ysu -> repo/bin/ysu),再定位仓库目录。
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+DIR="$(cd "$(dirname "$SELF")/.." && pwd -P)"
 OUT="$DIR/cli/dist/ysu.mjs"
 if [ ! -f "$OUT" ] || [ -n "$(find "$DIR/cli" "$DIR/providers" "$DIR/lib" -name '*.ts' -newer "$OUT" -not -path '*/dist/*' 2>/dev/null | head -1)" ]; then
   node "$DIR/cli/build.mjs" >&2 || exit 1

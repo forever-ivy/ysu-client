@@ -218,12 +218,53 @@ export function helpText(prefix: string[]): string {
 
 // ─── 运行时 ───────────────────────────────────────────────────────────── //
 
+let transportInstalled = false
+/** 安装 Node 直连传输;与 provider 初始化无关(skbird 等命令也需要)。 */
+export async function ensureTransport(): Promise<void> {
+  if (transportInstalled) return
+  transportInstalled = true
+  const { setHttpTransport } = await import("@/lib/cookie")
+  setHttpTransport(nodeHttpSend)
+}
+
+/** CLI 下没有浏览器 MFA 弹窗:relogin 需要二次认证时记录下来,由调用方转成 AUTH_MFA_REQUIRED。 */
+export const reloginMfa: { username: string | null } = { username: null }
+async function installCliMfaHandler(): Promise<void> {
+  const { useMFAModalStore } = await import("@/lib/stores/mfa-modal")
+  useMFAModalStore.setState({
+    showMFA: ((opts: { username: string }) => {
+      reloginMfa.username = opts.username
+      return Promise.reject(new Error("MFA_REQUIRED_IN_CLI"))
+    }) as any,
+  })
+}
+
+/** 用记住的密码重登;需要二次认证时保存待续登录并抛出 AUTH_MFA_REQUIRED(退出码 4)。 */
+export async function cliRelogin(p: any, pending: Ctx["pending"]): Promise<boolean> {
+  reloginMfa.username = null
+  const ok = await (p.relogin?.() ?? Promise.resolve(false)).catch(() => false)
+  if (ok) return true
+  if (reloginMfa.username) {
+    const username = reloginMfa.username
+    reloginMfa.username = null
+    pending.set("mfa", { username, remember: true })
+    const { getYSUMfaMethods } = await import("@/providers/ysu/types")
+    const methods = [...getYSUMfaMethods()]
+    throw new CliError("AUTH_MFA_REQUIRED", "重新登录需要二次认证", {
+      username,
+      methods,
+      next: `ysu auth mfa-request --method <${methods.join("|")}>  然后  ysu auth mfa-submit --code <验证码>;或 ysu auth wechat-start`,
+    })
+  }
+  return false
+}
+
 let providerPromise: Promise<any> | null = null
 async function bootProvider(): Promise<any> {
   if (providerPromise) return providerPromise
   providerPromise = (async () => {
-    const { setHttpTransport } = await import("@/lib/cookie")
-    setHttpTransport(nodeHttpSend)
+    await ensureTransport()
+    await installCliMfaHandler()
     const { useAuthStore } = await import("@/lib/stores/auth")
     await (useAuthStore as any).persist?.rehydrate?.()
     const { initializeActiveProvider } = await import("@/providers/provider-service")
@@ -273,14 +314,17 @@ async function readStdin(): Promise<string> {
 
 function makeCtx(args: Record<string, any>, flags: Record<string, any>): Ctx {
   const pend = bucket("secure")
+  const pendingApi: Ctx["pending"] = {
+    get: (k) => { const v = pend.get(`ysu-cli.pending.${k}`); return v ? JSON.parse(v) : undefined },
+    set: (k, v) => pend.set(`ysu-cli.pending.${k}`, JSON.stringify(v)),
+    del: (k) => pend.remove(`ysu-cli.pending.${k}`),
+  }
   return {
     args,
     provider: bootProvider,
-    pending: {
-      get: (k) => { const v = pend.get(`ysu-cli.pending.${k}`); return v ? JSON.parse(v) : undefined },
-      set: (k, v) => pend.set(`ysu-cli.pending.${k}`, JSON.stringify(v)),
-      del: (k) => pend.remove(`ysu-cli.pending.${k}`),
-    },
+    ensureTransport,
+    relogin: async () => cliRelogin(await bootProvider(), pendingApi),
+    pending: pendingApi,
     async readSecret(name, stdinFlag, env) {
       if (stdinFlag && flags[stdinFlag]) return (await readStdin()) || undefined
       if (typeof flags[name] === "string") return flags[name]
@@ -364,7 +408,7 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
         if (cmd.auth && !relogged && !g["no-relogin"] && (code === "AUTH_SESSION_EXPIRED" || code === "AUTH_REQUIRED")) {
           const p = await bootProvider()
           relogged = true
-          if (await p.relogin?.().catch(() => false)) continue
+          if (await cliRelogin(p, ctx.pending)) continue
         }
         throw e
       }

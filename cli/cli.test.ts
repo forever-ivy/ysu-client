@@ -251,3 +251,123 @@ describe("Node 直连传输(本地 HTTP 服务)", () => {
     expect(toErrorPayload(err).exitCode).toBe(5)
   })
 })
+
+// ─── Codex 审查回归测试 ───────────────────────────────────────────────── //
+
+const fakeCtx = (over: Partial<any> = {}) => {
+  const pend: Record<string, any> = {}
+  return {
+    args: {},
+    pendingStore: pend,
+    provider: async () => ({}),
+    ensureTransport: async () => {},
+    relogin: async () => false,
+    pending: { get: (k: string) => pend[k], set: (k: string, v: any) => { pend[k] = v }, del: (k: string) => { delete pend[k] } },
+    readSecret: async () => undefined,
+    ...over,
+  } as any
+}
+const cmd = (name: string) => COMMANDS.find((c) => c.name === name)!
+
+describe("Codex 审查修复", () => {
+  it("skbird 命令先安装 Node 传输(不依赖 provider 初始化)", async () => {
+    let installed = 0
+    let providerBooted = 0
+    process.env.YSU_SKBIRD_TOKEN = "T-123456789"
+    const ctx = fakeCtx({ ensureTransport: async () => { installed++ }, provider: async () => { providerBooted++; return {} } })
+    const net = COMMANDS.find((c) => c.name.startsWith("skbird ") && c.name !== "skbird config" && !c.sideEffect)!
+    await net.run(ctx).catch(() => {})
+    delete process.env.YSU_SKBIRD_TOKEN
+    expect(installed).toBeGreaterThan(0)
+    expect(providerBooted).toBe(0)
+  })
+
+  it("bin/ysu 经符号链接调用也能找到仓库", async () => {
+    const { execFileSync } = await import("node:child_process")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ysu-link-"))
+    fs.mkdirSync(path.join(tmp, "bin"))
+    const link = path.join(tmp, "bin", "ysu")
+    fs.symlinkSync(path.resolve(__dirname, "..", "bin", "ysu"), link)
+    const out = execFileSync(link, ["version", "--json"], { env: { ...process.env, YSU_CLI_HOME: HOME }, encoding: "utf8" })
+    expect(JSON.parse(out).ok).toBe(true)
+  }, 120_000)
+
+  it("微信 MFA 完成后用待续登录的学号保存凭据", async () => {
+    const { useAuthStore } = await import("@/lib/stores/auth")
+    useAuthStore.getState().clearCredential()
+    const p = {
+      pollWechatMfaQr: async () => ({ status: "confirmed", code: "C", errcode: 405 }),
+      completeWechatMfa: async () => { useAuthStore.getState().setCredential("cred", undefined); return "cred" },
+    }
+    const ctx = fakeCtx({ args: { wait: 0 }, provider: async () => p })
+    ctx.pending.set("mfa", { username: "2021000001", remember: false })
+    ctx.pending.set("wechat", { uuid: "u", state: "s" })
+    const r = await cmd("auth wechat-poll").run(ctx)
+    expect(r.username).toBe("2021000001")
+    expect(useAuthStore.getState().username).toBe("2021000001")
+    expect(ctx.pending.get("mfa")).toBeUndefined()
+    useAuthStore.getState().clearCredential()
+  })
+
+  it("relogin 需要 MFA 时不挂起,返回 AUTH_MFA_REQUIRED 并保存待续登录", async () => {
+    const { cliRelogin } = await import("./main")
+    const { useMFAModalStore } = await import("@/lib/stores/mfa-modal")
+    // 模拟 bootProvider 安装的 CLI 处理器
+    const main = await import("./main")
+    useMFAModalStore.setState({ showMFA: ((o: any) => { main.reloginMfa.username = o.username; return Promise.reject(new Error("x")) }) as any })
+    const p = { relogin: async () => { try { await useMFAModalStore.getState().showMFA({ username: "2021000002" }); return true } catch { return false } } }
+    const ctx = fakeCtx()
+    let err: any
+    const t0 = Date.now()
+    try { await cliRelogin(p, ctx.pending) } catch (e) { err = e }
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(err?.code).toBe("AUTH_MFA_REQUIRED")
+    expect(toErrorPayload(err).exitCode).toBe(4)
+    expect(ctx.pending.get("mfa")).toEqual({ username: "2021000002", remember: true })
+  })
+
+  it("auth login 先重置 CAS 会话(切换账号不沿用旧 cookie);--captcha 续接时保留", async () => {
+    const calls: string[] = []
+    const p = { resetLoginSession: async () => { calls.push("reset") }, login: async () => { calls.push("login") } }
+    const ctx = fakeCtx({ args: { username: "B" }, provider: async () => p, readSecret: async () => "pw" })
+    await cmd("auth login").run(ctx)
+    expect(calls).toEqual(["reset", "login"])
+    calls.length = 0
+    const { useAuthStore } = await import("@/lib/stores/auth")
+    useAuthStore.getState().clearCredential()
+    await cmd("auth login").run(fakeCtx({ args: { username: "B", captcha: "abcd" }, provider: async () => p, readSecret: async () => "pw" }))
+    expect(calls).toEqual(["login"])
+    useAuthStore.getState().clearCredential()
+  })
+
+  it("并发进程不会互相覆盖状态文件中的其他键", () => {
+    store.resetCache()
+    const b = store.bucket("secure")
+    b.get("x") // 载入快照
+    // 另一个进程在此期间写入了新键
+    const disk = JSON.parse(fs.readFileSync(store.statePath(), "utf8"))
+    disk.secure["other-process"] = "1"
+    fs.writeFileSync(store.statePath(), JSON.stringify(disk))
+    b.set("this-process", "2")
+    store.flush()
+    const after = JSON.parse(fs.readFileSync(store.statePath(), "utf8"))
+    expect(after.secure["other-process"]).toBe("1")
+    expect(after.secure["this-process"]).toBe("2")
+    expect(fs.existsSync(path.join(store.stateDir(), "state.lock"))).toBe(false)
+  })
+
+  it("两个真实子进程并发写不同键,两者都保留", async () => {
+    const { spawn } = await import("node:child_process")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ysu-race-"))
+    const storeSrc = path.resolve(__dirname, "store.ts")
+    const script = (k: string) => `const s=await import(${JSON.stringify(storeSrc)});const b=s.bucket("secure");b.get("z");await new Promise(r=>setTimeout(r,300));b.set(${JSON.stringify(k)},"1");s.flush();`
+    const runOne = (k: string) => new Promise<number>((res) => {
+      const c = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script(k)], { env: { ...process.env, YSU_CLI_HOME: dir }, stdio: "inherit" })
+      c.on("exit", (code) => res(code ?? 1))
+    })
+    const codes = await Promise.all([runOne("k1"), runOne("k2")])
+    expect(codes).toEqual([0, 0])
+    const st = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"))
+    expect(Object.keys(st.secure).sort()).toEqual(["k1", "k2"])
+  }, 30_000)
+})

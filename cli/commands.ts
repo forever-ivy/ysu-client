@@ -8,6 +8,10 @@ import type { ArgSpec, CommandSpec } from "./spec"
 export interface Ctx {
   args: Record<string, any>
   provider(): Promise<any>
+  /** 安装 Node HTTP 传输(不初始化 provider) */
+  ensureTransport(): Promise<void>
+  /** 用记住的密码重登;需要 MFA 时抛 AUTH_MFA_REQUIRED */
+  relogin(): Promise<boolean>
   /** 读取 / 写入 CLI 私有状态(0600 文件) */
   pending: { get(k: string): any; set(k: string, v: any): void; del(k: string): void }
   readSecret(name: string, flag?: string, env?: string): Promise<string | undefined>
@@ -40,6 +44,7 @@ async function P(ctx: Ctx) {
 }
 
 async function skbird(ctx: Ctx) {
+  await ctx.ensureTransport()
   const { useSkbirdStore } = await import("@/lib/extras/skbird/store")
   await (useSkbirdStore as any).persist?.rehydrate?.()
   const st = useSkbirdStore.getState()
@@ -51,7 +56,6 @@ async function skbird(ctx: Ctx) {
     })
   }
   const { SkbirdClient } = await import("@/lib/extras/skbird/client")
-  void ctx
   return new SkbirdClient({ token, deviceId: st.deviceId, alias: st.alias || "ysu" })
 }
 
@@ -99,6 +103,13 @@ export const COMMANDS: Command[] = [
       const password = await ctx.readSecret("password", "password-stdin", "YSU_PASSWORD")
       if (!password) throw usage("缺少密码:设置 YSU_PASSWORD 或使用 --password-stdin")
       const username = String(ctx.args.username)
+      // 全新登录(或切换账号)必须丢弃旧 CAS 会话,否则会沿用上一个账号的已登录 cookie;
+      // 只有带 --captcha 续接同一账号的验证码流程时才保留当前会话。
+      const { useAuthStore } = await import("@/lib/stores/auth")
+      const cur = useAuthStore.getState()
+      if (!ctx.args.captcha || cur.isAuthenticated) {
+        await p.resetLoginSession?.()
+      }
       try {
         await p.login({ username, password, metadata: ctx.args.captcha ? { captcha: ctx.args.captcha } : {} })
       } catch (e: any) {
@@ -218,11 +229,19 @@ export const COMMANDS: Command[] = [
         last = r.errcode
         ctx.pending.set("wechat", { ...w, last })
         if (r.status === "confirmed" && r.code) {
-          await p.completeWechatMfa(r.code, w.state)
+          const credential = await p.completeWechatMfa(r.code, w.state)
+          const pend = ctx.pending.get("mfa")
+          const { useAuthStore } = await import("@/lib/stores/auth")
+          const username = pend?.username ?? useAuthStore.getState().username
+          // 与 components/mfa-modal.tsx 一致:用待续登录的学号保存凭据
+          useAuthStore.getState().setCredential(credential, username)
+          if (pend?.remember && pend?.password) {
+            const { saveRememberedCredentials } = await import("@/lib/storage/secure")
+            await saveRememberedCredentials(pend.username, pend.password)
+          }
           ctx.pending.del("wechat")
           ctx.pending.del("mfa")
-          const { useAuthStore } = await import("@/lib/stores/auth")
-          return { status: "confirmed", authenticated: true, username: useAuthStore.getState().username }
+          return { status: "confirmed", authenticated: true, username }
         }
         if (r.status === "expired") { ctx.pending.del("wechat"); return { status: "expired", next: "ysu auth wechat-start" } }
         if (Date.now() >= deadline) return { status: r.status }
@@ -233,8 +252,7 @@ export const COMMANDS: Command[] = [
     name: "auth relogin",
     summary: "用已记住的密码重新登录",
     async run(ctx) {
-      const p = await P(ctx)
-      return { success: (await p.relogin?.()) ?? false }
+      return { success: await ctx.relogin() }
     },
   },
   {
