@@ -259,6 +259,11 @@ export async function cliRelogin(p: any, pending: Ctx["pending"]): Promise<boole
   return false
 }
 
+export function hasPendingChallenge(): boolean {
+  const sec = bucket("secure")
+  return !!(sec.get("ysu-cli.pending.mfa") || sec.get("ysu-cli.pending.wechat"))
+}
+
 let providerPromise: Promise<any> | null = null
 async function bootProvider(): Promise<any> {
   if (providerPromise) return providerPromise
@@ -271,7 +276,7 @@ async function bootProvider(): Promise<any> {
     const p = await initializeActiveProvider()
     // 进行中的 MFA / 验证码登录:恢复 CAS jar(上一次进程保存的)
     const raw = bucket("secure").get("ysu-cli.cas-jar")
-    if (raw && !useAuthStore.getState().isAuthenticated) {
+    if (raw && (!useAuthStore.getState().isAuthenticated || hasPendingChallenge())) {
       const { SimpleCookieJar } = await import("@/lib/cookie")
       const { setJar } = await import("@/providers/ysu/protocol/cas")
       setJar(SimpleCookieJar.fromJSON(raw))
@@ -287,7 +292,12 @@ async function persistAfterRun(): Promise<void> {
     const { useAuthStore } = await import("@/lib/stores/auth")
     const st = useAuthStore.getState()
     const sec = bucket("secure")
-    if (st.isAuthenticated) {
+    if (hasPendingChallenge()) {
+      // 二次认证进行中:无论 isAuthenticated 缓存如何,都保存当前 CAS jar 供下一进程续接
+      const { getJar } = await import("@/providers/ysu/protocol/cas")
+      const jar = getJar()
+      if ((await jar.getAllCookies()).length) sec.set("ysu-cli.cas-jar", jar.toJSON())
+    } else if (st.isAuthenticated) {
       const { persistJWXTSession, persistMobileSession } = await import("@/providers/ysu/session")
       await persistJWXTSession().catch(() => {})
       await persistMobileSession().catch(() => {})
@@ -347,6 +357,10 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
     const out = json ? JSON.stringify(obj, null, pretty ? 2 : undefined) + "\n" : human.endsWith("\n") ? human : human + "\n"
     return { exitCode, stdout: toErr && !json ? "" : out, stderr: toErr && !json ? out : "" }
   }
+  // 先确定输出模式,保证全局参数校验失败时仍输出 JSON 信封
+  const truthy = (v: unknown) => v === true || /^(1|true|yes|on)$/i.test(String(v ?? ""))
+  pretty = truthy(flags.pretty)
+  json = pretty || (flags.json !== undefined ? truthy(flags.json) : truthy(env.YSU_CLI_JSON))
   try {
     g = resolveArgs(GLOBAL_FLAGS, flags, env)
     pretty = !!g.pretty

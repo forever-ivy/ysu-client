@@ -8,6 +8,16 @@ import { DOMParser as LinkeDOMParser } from "linkedom"
 import { bucket } from "../store"
 
 const g = globalThis as any
+
+// Node 20 没有 Promise.withResolvers(Node 22+ 才有);providers/ysu/auth-transition.ts 依赖它
+if (typeof (Promise as any).withResolvers !== "function") {
+  ;(Promise as any).withResolvers = function withResolvers<T>() {
+    let resolve!: (v: T | PromiseLike<T>) => void
+    let reject!: (e?: unknown) => void
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+}
 const ls = bucket("local")
 const storage = {
   getItem: (k: string) => ls.get(k),

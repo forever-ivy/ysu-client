@@ -59,6 +59,28 @@ async function skbird(ctx: Ctx) {
   return new SkbirdClient({ token, deviceId: st.deviceId, alias: st.alias || "ysu" })
 }
 
+/** 新账号登录前清空所有由 CAS 派生的业务会话(教务、移动端等),避免旧账号 cookie 被写回新账号。 */
+export async function resetDerivedSessions(): Promise<void> {
+  const mods = await Promise.all([
+    import("@/providers/ysu/protocol/jwxt"), import("@/providers/ysu/protocol/ldxt"), import("@/providers/ysu/protocol/scxt"),
+    import("@/providers/ysu/protocol/xgxt"), import("@/providers/ysu/protocol/epay"), import("@/providers/ysu/protocol/ecard"),
+    import("@/providers/ysu/protocol/jwmobile"),
+  ])
+  mods[0].resetJWXT(); mods[1].resetLdxt(); mods[2].resetScxt(); mods[3].resetXgxt(); mods[4].resetEpay(); mods[5].resetEcard(); mods[6].resetMobileAuth()
+  const { useAuthStore } = await import("@/lib/stores/auth")
+  useAuthStore.setState({ jwxtSession: null, mobileSession: null })
+}
+
+/** 按教学周过滤课程(与 app/dashboard/schedule 的 isCourseActiveInWeek 一致) */
+export async function filterByWeek(result: any, week: number | undefined): Promise<any> {
+  if (week === undefined) return result
+  const { isCourseActiveInWeek } = await import("@/app/dashboard/schedule/schedule-utils")
+  const f = (list: any[]) => list.filter((c) => isCourseActiveInWeek(c, week))
+  if (Array.isArray(result)) return f(result)
+  if (result && Array.isArray(result.courses)) return { ...result, courses: f(result.courses) }
+  return result
+}
+
 const mask = (v: string) => (v ? `${v.slice(0, 3)}…${v.slice(-2)} (${v.length} chars)` : "")
 
 export const COMMANDS: Command[] = [
@@ -109,6 +131,7 @@ export const COMMANDS: Command[] = [
       const cur = useAuthStore.getState()
       if (!ctx.args.captcha || cur.isAuthenticated) {
         await p.resetLoginSession?.()
+        await resetDerivedSessions()
       }
       try {
         await p.login({ username, password, metadata: ctx.args.captcha ? { captcha: ctx.args.captcha } : {} })
@@ -299,7 +322,10 @@ export const COMMANDS: Command[] = [
   {
     name: "schedule courses", summary: "我的课表(可按周过滤,可合并实验课)", auth: true, paged: true, capability: "schedule",
     args: [n("week", "教学周"), semester, s("course-category", "课程类别"), b("include-lab", "合并实验课表")],
-    async run(ctx) { return (await P(ctx)).getSchedule(pick(ctx.args, { week: "week", semester: "semester", "course-category": "courseCategory", "include-lab": "includeLabSchedule" })) },
+    async run(ctx) {
+      const r = await (await P(ctx)).getSchedule(pick(ctx.args, { week: "week", semester: "semester", "course-category": "courseCategory", "include-lab": "includeLabSchedule" }))
+      return filterByWeek(r, ctx.args.week)
+    },
   },
   { name: "schedule unscheduled", summary: "无固定时间的课程", auth: true, paged: true, capability: "schedule", args: [semester, s("course-category", "课程类别")], async run(ctx) { return (await P(ctx)).getUnscheduledCourses(pick(ctx.args, { semester: "semester", "course-category": "courseCategory" })) } },
   { name: "schedule periods", summary: "作息时间(每节课起止时间)", auth: true, paged: true, capability: "classPeriods", async run(ctx) { return (await P(ctx)).getClassPeriods() } },

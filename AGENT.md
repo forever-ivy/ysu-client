@@ -18,7 +18,7 @@ ln -s "$PWD/bin/ysu" /usr/local/bin/ysu   # 或者 pnpm link --global
 ysu version --json
 ```
 
-`bin/ysu` 发现源码比产物新时会自动重新打包。需要 Node ≥ 20。
+`bin/ysu` 发现源码比产物新时会自动重新打包。需要 Node ≥ 20(CLI 在 `cli/shims/globals.ts` 中为 Node 20 补齐 `Promise.withResolvers`)。
 
 ## 输出格式
 

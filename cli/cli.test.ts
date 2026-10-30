@@ -3,7 +3,7 @@ import fs from "node:fs"
 import http from "node:http"
 import os from "node:os"
 import path from "node:path"
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ysu-cli-test-"))
 process.env.YSU_CLI_HOME = HOME
@@ -370,4 +370,55 @@ describe("Codex 审查修复", () => {
     const st = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"))
     expect(Object.keys(st.secure).sort()).toEqual(["k1", "k2"])
   }, 30_000)
+})
+
+describe("Codex 审查修复(第二轮)", () => {
+  it("auth login 切换账号时清空教务/移动端等派生会话", async () => {
+    const jwxt = await import("@/providers/ysu/protocol/jwxt")
+    const jwm = await import("@/providers/ysu/protocol/jwmobile")
+    const { useAuthStore } = await import("@/lib/stores/auth")
+    useAuthStore.setState({ jwxtSession: "A-jwxt", mobileSession: "A-mobile" })
+    const spy1 = vi.spyOn(jwxt, "resetJWXT"); const spy2 = vi.spyOn(jwm, "resetMobileAuth")
+    const p = { resetLoginSession: async () => {}, login: async () => {} }
+    await cmd("auth login").run(fakeCtx({ args: { username: "B" }, provider: async () => p, readSecret: async () => "pw" }))
+    expect(spy1).toHaveBeenCalled(); expect(spy2).toHaveBeenCalled()
+    expect(useAuthStore.getState().jwxtSession).toBeNull()
+    expect(useAuthStore.getState().mobileSession).toBeNull()
+    useAuthStore.getState().clearCredential()
+  })
+
+  it("有待续二次认证时,即便 isAuthenticated 为真也识别为 pending", async () => {
+    const { hasPendingChallenge } = await import("./main")
+    const b = store.bucket("secure")
+    b.remove("ysu-cli.pending.mfa"); b.remove("ysu-cli.pending.wechat")
+    expect(hasPendingChallenge()).toBe(false)
+    b.set("ysu-cli.pending.mfa", JSON.stringify({ username: "x" }))
+    expect(hasPendingChallenge()).toBe(true)
+    b.remove("ysu-cli.pending.mfa")
+  })
+
+  it("schedule courses --week 只返回该周有课的课程", async () => {
+    const courses = [{ name: "A", weekList: [1, 2, 3] }, { name: "B", weekList: [5] }, { name: "C", weeks: "" }]
+    const p = { getSchedule: async () => courses }
+    const r = await cmd("schedule courses").run(fakeCtx({ args: { week: 2 }, provider: async () => p }))
+    expect(r.map((c: any) => c.name)).toEqual(["A", "C"])
+    const all = await cmd("schedule courses").run(fakeCtx({ args: {}, provider: async () => p }))
+    expect(all.length).toBe(3)
+  })
+
+  it("全局参数非法时仍输出 JSON 信封", async () => {
+    const r = await run(["version", "--json", "--timeout", "oops"])
+    expect(r.exitCode).toBe(2)
+    const body = JSON.parse(r.stdout)
+    expect(body.ok).toBe(false)
+    expect(body.error.code).toBe("USAGE")
+    const r2 = await run(["version"], { ...process.env, YSU_CLI_JSON: "1", YSU_CLI_TIMEOUT_MS: "bad" })
+    expect(JSON.parse(r2.stdout).ok).toBe(false)
+  })
+
+  it("Promise.withResolvers 在 CLI 中可用(Node 20 polyfill)", () => {
+    const { promise, resolve } = (Promise as any).withResolvers()
+    resolve(1)
+    return expect(promise).resolves.toBe(1)
+  })
 })
