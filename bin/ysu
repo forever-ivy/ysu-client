@@ -1,0 +1,8 @@
+#!/bin/sh
+# ysu —— 燕大终端 CLI 启动器。首次运行或源码更新后自动打包。
+DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+OUT="$DIR/cli/dist/ysu.mjs"
+if [ ! -f "$OUT" ] || [ -n "$(find "$DIR/cli" "$DIR/providers" "$DIR/lib" -name '*.ts' -newer "$OUT" -not -path '*/dist/*' 2>/dev/null | head -1)" ]; then
+  node "$DIR/cli/build.mjs" >&2 || exit 1
+fi
+exec node "$OUT" "$@"

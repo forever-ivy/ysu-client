@@ -13,11 +13,11 @@ import {
   fetchWithJar,
   fetchStateless,
   headerSingle,
+  hasDirectTransport,
   type HttpResponse,
 } from "@/lib/cookie"
 import { saveCASTGC as saveCASTGCSecure, loadCASTGC } from "@/lib/storage/secure"
 import { serverConfig, casUrls, getCasCookieDomain, getSchoolConfig } from "@/lib/server-config"
-import { isCapacitor } from "@/lib/native/platform"
 import type { YSUMfaMethod } from "../types"
 
 // ─── Constants ────────────────────────────────────────────────────────── //
@@ -921,7 +921,7 @@ export async function pollWechatQR(
   code?: string
   errcode?: number
 }> {
-  const { errcode, code } = isCapacitor()
+  const { errcode, code } = hasDirectTransport()
     ? await pollWechatQrViaHttp(uuid, lastErrcode, signal)
     : await pollWechatQrViaScriptTag(uuid, lastErrcode, signal)
 
