@@ -100,3 +100,4 @@ lib/fees/meter/client.test.ts
 
 # agent CLI 打包产物
 /cli/dist/
+/cli/release/

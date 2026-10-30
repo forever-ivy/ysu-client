@@ -70,6 +70,20 @@ bin/ysu grades list --json
 
 完整说明见 [AGENT.md](./AGENT.md)。
 
+
+### 下载预编译 CLI
+
+见 [Releases · cli-v1.0.0](https://github.com/forever-ivy/ysu-client/releases/tag/cli-v1.0.0)。
+
+```bash
+# 独立可执行文件(无需 Node):linux-x64 / darwin-arm64 / darwin-x64 / windows-x64.exe
+curl -L -o ysu https://github.com/forever-ivy/ysu-client/releases/download/cli-v1.0.0/ysu-v1.0.0-linux-x64 && chmod +x ysu && ./ysu --version
+# 或单文件(Node >= 20,无其它依赖)
+curl -LO https://github.com/forever-ivy/ysu-client/releases/download/cli-v1.0.0/ysu.mjs && node ysu.mjs --help
+```
+
+校验:`sha256sum -c SHA256SUMS`。重新打包:`cli/release.sh`。
+
 ## 兼容性
 
 应用运行在系统 WebView 中。如遇渲染异常，请检查 WebView 版本是否过低——
