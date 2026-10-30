@@ -1,0 +1,20 @@
+#!/bin/sh
+# ysu —— 燕大终端 CLI 启动器。首次运行或源码更新后自动打包。
+# 先解析符号链接(如 /usr/local/bin/ysu -> repo/bin/ysu),再定位仓库目录。
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+DIR="$(cd "$(dirname "$SELF")/.." && pwd -P)"
+OUT="$DIR/cli/dist/ysu.mjs"
+# V8 编译缓存:省掉每次解析 1.2MB 打包文件的时间(Node 22.1+ 生效,旧版本忽略)
+export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ysu-cli/v8}"
+# YSU_CLI_NO_REBUILD=1:已安装/已预打包时跳过源码新旧检查
+if [ ! -f "$OUT" ] || { [ -z "$YSU_CLI_NO_REBUILD" ] && [ -n "$(find "$DIR/cli" "$DIR/providers" "$DIR/lib" -name '*.ts' -newer "$OUT" -not -path '*/dist/*' 2>/dev/null | head -1)" ]; }; then
+  node "$DIR/cli/build.mjs" >&2 || exit 1
+fi
+exec node "$OUT" "$@"

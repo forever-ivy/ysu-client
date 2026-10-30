@@ -57,6 +57,19 @@
 
 > 如遇网络故障，可在应用内配置 GitHub 代理镜像。设置入口会在出现网络故障时弹出。
 
+## 命令行 / Agent CLI
+
+仓库内置命令行版 `ysu`,覆盖 App 的全部功能(成绩、课表、考试、补考、劳动教育、创新学分、综合测评、全校课表与空教室、培养方案、评教、签到、一卡通、缴费、电费、森空鸟)。它面向脚本和 AI agent 设计:非交互、`--json` 输出结构稳定、退出码有含义、写操作默认 dry-run。
+
+```bash
+pnpm install && pnpm cli:build
+bin/ysu --help
+printf '%s' "$PW" | bin/ysu auth login --username 2021xxxxxxxx --password-stdin --remember --json
+bin/ysu grades list --json
+```
+
+完整说明见 [AGENT.md](./AGENT.md)。
+
 ## 兼容性
 
 应用运行在系统 WebView 中。如遇渲染异常，请检查 WebView 版本是否过低——

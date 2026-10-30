@@ -12,7 +12,10 @@
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "cli:build": "node cli/build.mjs",
+    "cli": "node cli/build.mjs && node cli/dist/ysu.mjs",
+    "test:cli": "vitest run -c cli/vitest.config.ts"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "^8.0.0",
@@ -55,8 +58,10 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@types/semver": "^7.7.1",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.2.6",
+    "linkedom": "^0.18.14",
     "postcss": "^8.5.15",
     "prettier": "^3.8.3",
     "prettier-plugin-tailwindcss": "^0.8.0",
@@ -64,5 +69,8 @@
     "typescript": "^6.0.3",
     "vitest": "^4.1.11"
   },
-  "packageManager": "pnpm@11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621"
+  "packageManager": "pnpm@11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621",
+  "bin": {
+    "ysu": "bin/ysu"
+  }
 }

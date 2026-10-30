@@ -353,7 +353,24 @@ async function getCapacitorCore(): Promise<any> {
   return capCoreCache
 }
 
+/**
+ * 可插拔传输层：非 Capacitor、非浏览器的运行时（如 Node 终端 CLI，见 cli/）
+ * 可注入直连实现。注入后优先于原生/代理传输。
+ */
+export type HttpTransport = (jar: SimpleCookieJar, req: HttpRequest) => Promise<HttpResponse>
+let customTransport: HttpTransport | null = null
+export function setHttpTransport(transport: HttpTransport | null): void {
+  customTransport = transport
+}
+/** 是否可以直连上游（原生 CapacitorHttp 或注入的直连传输）。 */
+export function hasDirectTransport(): boolean {
+  return customTransport !== null || isCapacitor()
+}
+
 async function send(jar: SimpleCookieJar, req: HttpRequest): Promise<HttpResponse> {
+  if (customTransport) {
+    return customTransport(jar, req)
+  }
   if (isCapacitor()) {
     return capacitorHttpSend(jar, req)
   }
