@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /** Node 下没有 Capacitor 原生层:isNativePlatform() 恒为 false。 */
 export const Capacitor = {
   isNativePlatform: () => false,

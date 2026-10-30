@@ -560,6 +560,23 @@ export async function restoreSession(session: JWXTSession): Promise<void> {
 }
 
 let cachedStudentInfo: StudentInfo | null = null
+
+/**
+ * 跨进程的只读数据缓存种子(当前学期、学生基本信息)。
+ * 短生命周期的宿主(如 Node CLI,每条命令一个进程)可在启动时注入上次的结果,
+ * 省掉每次都要的 appShow + 查询往返;App 内不调用则行为不变。
+ */
+export interface JwxtDataCacheSnapshot {
+  terms?: Record<string, string>
+  studentInfo?: StudentInfo | null
+}
+let dataCacheSeed: JwxtDataCacheSnapshot | null = null
+export function seedJwxtDataCache(seed: JwxtDataCacheSnapshot | null): void {
+  dataCacheSeed = seed
+}
+export function snapshotJwxtDataCache(): JwxtDataCacheSnapshot {
+  return { terms: Object.fromEntries(currentTermCache), studentInfo: cachedStudentInfo }
+}
 let inflightStudentInfo: Promise<StudentInfo> | null = null
 
 export function resetJWXT(): void {
@@ -1112,6 +1129,11 @@ async function getCurrentTerm(appId: string, pathKey: string): Promise<string> {
   const cacheKey = `${appId}|${pathKey}`
   const cached = currentTermCache.get(cacheKey)
   if (cached) return cached
+  const seeded = dataCacheSeed?.terms?.[cacheKey]
+  if (seeded) {
+    currentTermCache.set(cacheKey, seeded)
+    return seeded
+  }
   const inflight = inflightCurrentTerm.get(cacheKey)
   if (inflight) return inflight
 
@@ -1160,6 +1182,7 @@ async function runWithReauth<T>(fn: () => Promise<T>): Promise<T> {
 // ─── Public: Student Info ─────────────────────────────────────────────── //
 
 export async function queryStudentInfo(): Promise<StudentInfo> {
+  if (!cachedStudentInfo && dataCacheSeed?.studentInfo) cachedStudentInfo = dataCacheSeed.studentInfo
   if (cachedStudentInfo) return cachedStudentInfo
   if (inflightStudentInfo) return inflightStudentInfo
 
@@ -1371,11 +1394,11 @@ export async function queryGradeRanking(opts?: {
 
 export async function querySchedule(opts?: { term?: string }): Promise<Course[]> {
   return runWithReauth(async () => {
-    await ensureWeu(_appIds.wdkb)
-    let term = opts?.term
-    if (term === undefined) {
-      term = await getCurrentTerm(_appIds.studentWdksapApp, "wdksap_dqxnxq")
-    }
+    // WEU 与当前学期互不依赖,并行获取
+    const [, term] = await Promise.all([
+      ensureWeu(_appIds.wdkb),
+      opts?.term ?? getCurrentTerm(_appIds.studentWdksapApp, "wdksap_dqxnxq"),
+    ])
     const datas = await post(_apiPaths.wdkb, { XNXQDM: term }, _appIds.wdkb)
     const rows = extractRows(datas, "cxxszhxqkb")
     return rows.map((r) => parseCourse(r as Record<string, unknown>))
@@ -1425,17 +1448,12 @@ async function queryCoursesByKblb(args: {
 }): Promise<Course[]> {
   const { pathKey, rowKey, courseCategory } = args
   return runWithReauth(async () => {
-    let term = args.term
-    if (term === undefined) {
-      term = await getCurrentTerm(_appIds.studentWdksapApp, "wdksap_dqxnxq")
-    }
-    let studentId = args.studentId
-    if (studentId === undefined) {
-      const info = await queryStudentInfo()
-      studentId = info.studentId
-    }
-
-    await ensureWeu(_appIds.wdkb_sy)
+    // 学期、学号、课表应用 WEU 三者互不依赖,并行获取(原先串行 6 次往返)
+    const [term, studentId] = await Promise.all([
+      args.term ?? getCurrentTerm(_appIds.studentWdksapApp, "wdksap_dqxnxq"),
+      args.studentId ?? queryStudentInfo().then((info) => info.studentId),
+      ensureWeu(_appIds.wdkb_sy!),
+    ])
 
     const kblb = COURSE_CATEGORY_TO_KBLB[courseCategory] ?? "0"
     const datas = await post(
@@ -1463,11 +1481,10 @@ export async function queryClassPeriods(): Promise<ClassPeriod[]> {
 
 export async function queryTermCalendar(opts?: { term?: string }): Promise<TermCalendar> {
   return runWithReauth(async () => {
-    await ensureWeu(_appIds.wdkb)
-    let term = opts?.term
-    if (term === undefined) {
-      term = await getCurrentTerm(_appIds.studentWdksapApp, "wdksap_dqxnxq")
-    }
+    const [, term] = await Promise.all([
+      ensureWeu(_appIds.wdkb),
+      opts?.term ?? getCurrentTerm(_appIds.studentWdksapApp, "wdksap_dqxnxq"),
+    ])
     const { xn, xq } = splitTerm(term)
     const datas = await post(_apiPaths.cxxljc, { XN: xn, XQ: xq }, _appIds.wdkb)
     const rows = extractRows(datas, "cxxljc")

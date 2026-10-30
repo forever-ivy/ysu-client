@@ -87,7 +87,14 @@ export class MeterClient {
       }).toString(),
       redirect: "manual",
     })
-    if (res.status !== 200) throw new MeterError(-1, `HTTP ${res.status}`)
+    if (res.status !== 200) {
+      const text = await res.text().catch(() => "")
+      // 阿里云 WAF 拦截页(常见于非中国大陆 IP / 数据中心出口):整个域名都会 405,与请求方法无关
+      if (res.status === 405 && /errors\.aliyun\.com|aliyun/i.test(text)) {
+        throw new MeterError(-1, "HTTP 405:请求被 17wanxiao 的阿里云 WAF 拦截(通常因为当前出口 IP 不在中国大陆),请在国内网络下重试")
+      }
+      throw new MeterError(-1, `HTTP ${res.status}`)
+    }
 
     const j = JSON.parse(await res.text()) as Record<string, unknown>
     if (typeof j.encryptData !== "string" || typeof j.randomStr !== "string") {

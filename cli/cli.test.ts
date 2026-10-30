@@ -482,3 +482,63 @@ describe("签到提速", () => {
     expect(r.body.error.code).toBe("DRY_RUN")
   })
 })
+
+describe("回归:版本 / 参数校验 / 上游错误分类 / 缓存 / 森空鸟提示", () => {
+  it("--version 输出版本号而不是帮助", async () => {
+    const r = await run(["--version"])
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toMatch(/^ysu \d+\.\d+\.\d+ \(app /)
+    const j = await J(["--version"])
+    expect(j.body.command).toBe("version")
+  })
+
+  it.each(["stats", "distribution", "ranking"])("grades %s 缺 --class-id/--course-code → USAGE exit 2,不发请求", async (sub) => {
+    const before = blockedRequests
+    const r = await J(["grades", sub])
+    expect(r.exitCode).toBe(2)
+    expect(r.body.error.code).toBe("USAGE")
+    expect(r.body.error.message).toMatch(/--class-id 或 --course-code/)
+    const both = await J(["grades", sub, "--class-id", "1", "--course-code", "2"])
+    expect(both.exitCode).toBe(2)
+    expect(blockedRequests).toBe(before)
+  })
+
+  it("CAS HTTP 500(含被 ProviderError(UNKNOWN) 包裹)→ BACKEND_UNAVAILABLE,可重试", () => {
+    const cas = Object.assign(new Error("CAS authorization returned HTTP 500"), { name: "CASProtocolError" })
+    const p = toErrorPayload(cas)
+    expect(p.code).toBe("BACKEND_UNAVAILABLE")
+    expect(p.exitCode).toBe(6)
+    expect(p.retryable).toBe(true)
+    expect(p.status).toBe(500)
+    const wrapped = Object.assign(new Error(cas.message, { cause: cas }), { name: "ProviderError", code: "UNKNOWN" })
+    expect(toErrorPayload(wrapped).code).toBe("BACKEND_UNAVAILABLE")
+  })
+
+  it("其他上游错误按类名归类,绝不落成 UNKNOWN", () => {
+    const mk = (name: string, msg: string) => Object.assign(new Error(msg), { name })
+    expect(toErrorPayload(mk("JWXTProtocolError", "request failed for x: boom")).code).toBe("BACKEND_PROTOCOL_ERROR")
+    expect(toErrorPayload(mk("JWXTBusinessError", "业务失败")).code).toBe("BACKEND_BUSINESS_ERROR")
+    expect(toErrorPayload(mk("XgxtProtocolError", "HTTP 403")).code).toBe("BACKEND_PROTOCOL_ERROR")
+    expect(toErrorPayload(mk("ScxtProtocolError", "HTTP 429")).code).toBe("RATE_LIMITED")
+    const meter = toErrorPayload(mk("MeterError", "HTTP 405"))
+    expect(meter.code).toBe("METER_ERROR")
+  })
+
+  it("森空鸟未配置 token:提示需要单独 token 并给出配置命令", async () => {
+    const r = await J(["skbird", "hot"])
+    expect(r.exitCode).toBe(3)
+    expect(r.body.error.message).toMatch(/与教务登录无关/)
+    expect(r.body.error.details.next).toMatch(/skbird config --token-stdin/)
+    expect(r.body.error.details.howToGetToken).toBeTruthy()
+  })
+
+  it("jwxt 只读缓存种子:学期与学生信息命中时不再请求", async () => {
+    const jw = await import("@/providers/ysu/protocol/jwxt")
+    jw.seedJwxtDataCache({ terms: { "x|wdksap_dqxnxq": "2026-2027-1" }, studentInfo: { studentId: "S1" } as any })
+    const info = await jw.queryStudentInfo()
+    expect(info.studentId).toBe("S1")
+    expect(jw.snapshotJwxtDataCache().studentInfo?.studentId).toBe("S1")
+    jw.seedJwxtDataCache(null)
+    jw.resetJWXT()
+  })
+})

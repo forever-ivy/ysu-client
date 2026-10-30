@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /** Node 版 @aparajita/capacitor-secure-storage:落到 0600 的 state.json。 */
 import { bucket } from "../store"
 

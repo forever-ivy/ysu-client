@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { run } from "./main"
 
 run(process.argv.slice(2)).then((r) => {

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /** UI toast 在 CLI 中转为 verbose 日志(stderr),不影响 JSON 输出。 */
 const log = (level: string) => (msg: unknown) => {
   if (process.env.YSU_CLI_VERBOSE) process.stderr.write(`[toast:${level}] ${String(msg)}\n`)

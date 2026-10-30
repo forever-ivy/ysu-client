@@ -21,6 +21,8 @@ export interface Command extends CommandSpec {
   run(ctx: Ctx): Promise<any>
   /** dry-run 时描述将要执行的操作 */
   plan?(ctx: Ctx): any
+  /** 不依赖网络的参数校验,在登录与 dry-run 之前执行 */
+  validate?(args: Record<string, any>): void
 }
 
 const s = (name: string, description: string, extra: Partial<ArgSpec> = {}): ArgSpec => ({ name, type: "string", description, ...extra })
@@ -33,6 +35,11 @@ const term = s("term", "学期(综合测评),如 1 / 2")
 const year = s("year", "学年,如 2025-2026")
 
 /** 选择性地只传非 undefined 的字段 */
+function requireOneOf(args: Record<string, any>, a: string, b: string): void {
+  const hasA = args[a] !== undefined && args[a] !== "", hasB = args[b] !== undefined && args[b] !== ""
+  if (hasA === hasB) throw usage(`需要且只能提供 --${a} 或 --${b} 其中一个(可从 grades list 的结果中取得)`)
+}
+
 function pick(args: Record<string, any>, map: Record<string, string>): Record<string, any> {
   const out: Record<string, any> = {}
   for (const [flag, key] of Object.entries(map)) if (args[flag] !== undefined) out[key] = args[flag]
@@ -51,8 +58,9 @@ async function skbird(ctx: Ctx) {
   const token = process.env.YSU_SKBIRD_TOKEN || st.token
   if (!token) {
     const { ProviderError, ProviderErrorCode } = await import("@/providers/errors")
-    throw new ProviderError(ProviderErrorCode.AUTH_REQUIRED, "森空鸟 token 未配置", undefined, 401, {
-      next: "ysu skbird config --token-stdin   (或设置环境变量 YSU_SKBIRD_TOKEN)",
+    throw new ProviderError(ProviderErrorCode.AUTH_REQUIRED, "森空鸟 token 未配置:森空鸟与教务登录无关,需要单独的 X-Sc-Token(来自森空鸟 App 抓包,微信登录无法脚本化,过期后需重新获取)", undefined, 401, {
+      next: "printf %s \"$YSU_SKBIRD_TOKEN\" | ysu skbird config --token-stdin   (或直接设置环境变量 YSU_SKBIRD_TOKEN)",
+      howToGetToken: "在手机上登录森空鸟 App,抓包任一 API 请求头里的 X-Sc-Token;也可在燕大终端 App 的 森空鸟 → 设置 页面查看已保存的 token",
     })
   }
   const { SkbirdClient } = await import("@/lib/extras/skbird/client")
@@ -314,9 +322,9 @@ export const COMMANDS: Command[] = [
     async run(ctx) { return (await P(ctx)).getGrades(pick(ctx.args, { semester: "semester", "course-name": "courseName", "course-type": "courseType", "page-size": "pageSize", page: "pageNumber" })) },
   },
   { name: "grades gpa", summary: "GPA 与学分统计", auth: true, capability: "gpa", args: [s("student-id", "学号(缺省为本人)")], async run(ctx) { return (await P(ctx)).getGPAStats(pick(ctx.args, { "student-id": "studentId" })) } },
-  { name: "grades stats", summary: "单门课程成绩统计(平均分、最高分等)", auth: true, capability: "gradeAnalytics", args: [semester, s("class-id", "教学班 ID"), s("course-code", "课程号")], async run(ctx) { return (await P(ctx)).getGradeStatistics(pick(ctx.args, { semester: "semester", "class-id": "classId", "course-code": "courseCode" })) } },
-  { name: "grades distribution", summary: "单门课程成绩分布", auth: true, paged: true, capability: "gradeAnalytics", args: [semester, s("class-id", "教学班 ID"), s("course-code", "课程号")], async run(ctx) { return (await P(ctx)).getGradeDistribution(pick(ctx.args, { semester: "semester", "class-id": "classId", "course-code": "courseCode" })) } },
-  { name: "grades ranking", summary: "单门课程成绩排名", auth: true, capability: "gradeAnalytics", args: [semester, s("class-id", "教学班 ID"), s("course-code", "课程号"), s("student-id", "学号")], async run(ctx) { return (await P(ctx)).getGradeRanking(pick(ctx.args, { semester: "semester", "class-id": "classId", "course-code": "courseCode", "student-id": "studentId" })) } },
+  { name: "grades stats", summary: "单门课程成绩统计(平均分、最高分等)", auth: true, capability: "gradeAnalytics", args: [semester, s("class-id", "教学班 ID"), s("course-code", "课程号")], validate: (a) => requireOneOf(a, "class-id", "course-code"), async run(ctx) { return (await P(ctx)).getGradeStatistics(pick(ctx.args, { semester: "semester", "class-id": "classId", "course-code": "courseCode" })) } },
+  { name: "grades distribution", summary: "单门课程成绩分布", auth: true, paged: true, capability: "gradeAnalytics", args: [semester, s("class-id", "教学班 ID"), s("course-code", "课程号")], validate: (a) => requireOneOf(a, "class-id", "course-code"), async run(ctx) { return (await P(ctx)).getGradeDistribution(pick(ctx.args, { semester: "semester", "class-id": "classId", "course-code": "courseCode" })) } },
+  { name: "grades ranking", summary: "单门课程成绩排名", auth: true, capability: "gradeAnalytics", args: [semester, s("class-id", "教学班 ID"), s("course-code", "课程号"), s("student-id", "学号")], validate: (a) => requireOneOf(a, "class-id", "course-code"), async run(ctx) { return (await P(ctx)).getGradeRanking(pick(ctx.args, { semester: "semester", "class-id": "classId", "course-code": "courseCode", "student-id": "studentId" })) } },
 
   // ───────────── 课表 / 校历 ───────────── //
   {

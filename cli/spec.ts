@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * 命令描述(与实现分离,供 schema / help / 参数解析共用)。
  */
@@ -70,7 +69,7 @@ export const EXIT_CODE_DOCS: Record<number, string> = {
   3: "需要登录或会话已过期且无法自动重登(AUTH_REQUIRED / AUTH_SESSION_EXPIRED / AUTH_INVALID_CREDENTIAL / 森空鸟 token 无效)",
   4: "需要人工步骤:验证码或二次认证(AUTH_CAPTCHA_REQUIRED / AUTH_MFA_REQUIRED),error.details.next 给出下一条命令",
   5: "网络错误或超时(NETWORK_ERROR / TIMEOUT)",
-  6: "上游业务或协议错误(BACKEND_BUSINESS_ERROR / BACKEND_PROTOCOL_ERROR)",
+  6: "上游业务或协议错误(BACKEND_BUSINESS_ERROR / BACKEND_PROTOCOL_ERROR);上游 5xx 为 BACKEND_UNAVAILABLE(可重试)",
   7: "该学校/后端不支持此功能(FEATURE_NOT_SUPPORTED)",
   8: "数据不存在(DATA_NOT_FOUND)",
   9: "被限流(RATE_LIMITED)",

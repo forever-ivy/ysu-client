@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Node 直连传输:替代 CapacitorHttp / Web 边缘代理。
  * - 手动处理重定向(上层 followRedirects 负责跟随),Cookie 只来自 jar;

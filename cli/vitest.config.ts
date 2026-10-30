@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { fileURLToPath } from "node:url"
 import { defineConfig } from "vitest/config"
 

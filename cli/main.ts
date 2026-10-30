@@ -112,6 +112,7 @@ const CODE_EXIT: Record<string, number> = {
   TIMEOUT: EXIT_CODES.NETWORK,
   BACKEND_BUSINESS_ERROR: EXIT_CODES.BACKEND,
   BACKEND_PROTOCOL_ERROR: EXIT_CODES.BACKEND,
+  BACKEND_UNAVAILABLE: EXIT_CODES.BACKEND,
   METER_ERROR: EXIT_CODES.BACKEND,
   SKBIRD_ERROR: EXIT_CODES.BACKEND,
   FEATURE_NOT_SUPPORTED: EXIT_CODES.NOT_SUPPORTED,
@@ -136,10 +137,42 @@ function scrub(v: unknown): any {
   return v
 }
 
+// 上游协议层抛出的原始错误(CASProtocolError / JWXTProtocolError 等,可能被 ProviderError(UNKNOWN) 包一层)
+// 按类名与消息里的 HTTP 状态码归类,避免落成 UNKNOWN
+function errorChain(e: any): any[] {
+  const out: any[] = []
+  for (let x = e, i = 0; x && i < 5; x = x.cause, i++) out.push(x)
+  return out
+}
+function httpStatusOf(e: any): number | undefined {
+  for (const x of errorChain(e)) {
+    const m = /\bHTTP (\d{3})\b/.exec(String(x?.message ?? ""))
+    if (m) return Number(m[1])
+  }
+  return undefined
+}
+export function classifyUpstream(e: any): string | undefined {
+  const status = httpStatusOf(e)
+  if (status !== undefined) {
+    if (status === 429) return "RATE_LIMITED"
+    if (status >= 500) return "BACKEND_UNAVAILABLE"
+    if (status === 404) return "DATA_NOT_FOUND"
+  }
+  for (const x of errorChain(e)) {
+    const name = String(x?.name ?? x?.constructor?.name ?? "")
+    if (/NotLoggedIn|NotAuthenticated/.test(name)) return "AUTH_SESSION_EXPIRED"
+    if (/BusinessError$/.test(name)) return "BACKEND_BUSINESS_ERROR"
+    if (/ProtocolError$/.test(name)) return "BACKEND_PROTOCOL_ERROR"
+  }
+  if (status !== undefined) return "BACKEND_PROTOCOL_ERROR"
+  return undefined
+}
+
 export function toErrorPayload(e: any): { code: string; message: string; exitCode: number; status?: number; details?: any; retryable: boolean } {
   let code = typeof e?.code === "string" ? e.code : "UNKNOWN"
   if (e?.name === "MeterError") code = /NOT_BOUND/.test(e.message) ? "DATA_NOT_FOUND" : "METER_ERROR"
   if (e?.name === "SkbirdError") code = e.errno === 10 ? "SKBIRD_TOKEN_INVALID" : "SKBIRD_ERROR"
+  if (code === "UNKNOWN") code = classifyUpstream(e) ?? code
   if (code === "UNKNOWN" && (e?.name === "TimeoutError" || /timeout/i.test(e?.message ?? ""))) code = "TIMEOUT"
   if (code === "UNKNOWN" && /network error|fetch failed|ENOTFOUND|ECONNRE/i.test(e?.message ?? "")) code = "NETWORK_ERROR"
   if (!(code in CODE_EXIT)) code = "UNKNOWN"
@@ -150,7 +183,8 @@ export function toErrorPayload(e: any): { code: string; message: string; exitCod
     exitCode: CODE_EXIT[code]!,
     ...(typeof e?.status === "number" ? { status: e.status } : {}),
     ...(details !== undefined ? { details: scrub(details) } : {}),
-    retryable: code === "NETWORK_ERROR" || code === "TIMEOUT" || code === "RATE_LIMITED",
+    ...(typeof e?.status !== "number" && httpStatusOf(e) !== undefined ? { status: httpStatusOf(e) } : {}),
+    retryable: code === "NETWORK_ERROR" || code === "TIMEOUT" || code === "RATE_LIMITED" || code === "BACKEND_UNAVAILABLE",
   }
 }
 
@@ -274,6 +308,7 @@ async function bootProvider(): Promise<any> {
     await (useAuthStore as any).persist?.rehydrate?.()
     const { initializeActiveProvider } = await import("@/providers/provider-service")
     const p = await initializeActiveProvider()
+    await seedDataCache(useAuthStore.getState().username)
     // 进行中的 MFA / 验证码登录:恢复 CAS jar(上一次进程保存的)
     const raw = bucket("secure").get("ysu-cli.cas-jar")
     if (raw && (!useAuthStore.getState().isAuthenticated || hasPendingChallenge())) {
@@ -284,6 +319,38 @@ async function bootProvider(): Promise<any> {
     return p
   })()
   return providerPromise
+}
+
+// 跨进程只读缓存(当前学期 / 学生基本信息):每条命令一个进程,不缓存的话每次都要多 2~4 次教务往返
+const DATA_CACHE_KEY = "ysu-cli.jwxt-data-cache"
+export const DATA_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+async function seedDataCache(username: string | null | undefined): Promise<void> {
+  try {
+    const raw = bucket("local").get(DATA_CACHE_KEY)
+    if (!raw || !username || process.env.YSU_CLI_NO_CACHE) return
+    const c = JSON.parse(raw)
+    if (c.username !== username || !(Date.now() - c.savedAt < DATA_CACHE_TTL_MS)) return
+    const { seedJwxtDataCache } = await import("@/providers/ysu/protocol/jwxt")
+    seedJwxtDataCache({ terms: c.terms ?? {}, studentInfo: c.studentInfo ?? null })
+  } catch {
+    // 缓存损坏:忽略,按无缓存处理
+  }
+}
+async function saveDataCache(username: string | null | undefined): Promise<void> {
+  if (!username) return
+  const { snapshotJwxtDataCache } = await import("@/providers/ysu/protocol/jwxt")
+  const snap = snapshotJwxtDataCache()
+  if (!Object.keys(snap.terms ?? {}).length && !snap.studentInfo) return
+  const prev = (() => { try { return JSON.parse(bucket("local").get(DATA_CACHE_KEY) ?? "null") } catch { return null } })()
+  const fresh = prev && prev.username === username && Date.now() - prev.savedAt < DATA_CACHE_TTL_MS
+  const merged = {
+    username,
+    savedAt: fresh ? prev.savedAt : Date.now(),
+    terms: { ...(fresh ? prev.terms : {}), ...snap.terms },
+    studentInfo: snap.studentInfo ?? (fresh ? prev.studentInfo : null),
+  }
+  if (fresh && JSON.stringify(merged) === JSON.stringify(prev)) return
+  bucket("local").set(DATA_CACHE_KEY, JSON.stringify(merged))
 }
 
 async function persistAfterRun(): Promise<void> {
@@ -301,6 +368,7 @@ async function persistAfterRun(): Promise<void> {
       const { persistJWXTSession, persistMobileSession } = await import("@/providers/ysu/session")
       await persistJWXTSession().catch(() => {})
       await persistMobileSession().catch(() => {})
+      await saveDataCache(st.username).catch(() => {})
       sec.remove("ysu-cli.cas-jar")
     } else {
       const { getJar } = await import("@/providers/ysu/protocol/cas")
@@ -375,12 +443,12 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
     if (transportOptions.trace) stats.trace = []
     if (g.verbose) process.env.YSU_CLI_VERBOSE = "1"
 
-    if (path.length === 0 || path[0] === "help") {
+    if ((path.length === 0 && !truthy(flags.version)) || path[0] === "help") {
       const p = path[0] === "help" ? path.slice(1) : []
       return emit({ ok: true, command: "help", data: { text: helpText(p) } }, helpText(p), 0)
     }
     if (path[0] === "schema") return emit({ ok: true, command: "schema", data: schema() }, JSON.stringify(schema(), null, 2), 0)
-    if (path[0] === "version") {
+    if (path[0] === "version" || (path.length === 0 && truthy(flags.version))) {
       const v = { cli: CLI_VERSION, app: (pkg as any).version, node: process.version }
       return emit({ ok: true, command: "version", data: v }, `ysu ${v.cli} (app ${v.app}, node ${v.node})`, 0)
     }
@@ -398,6 +466,8 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
     if (unknown.length) throw new CliError("USAGE", `未知参数: ${unknown.map((k) => "--" + k).join(" ")}`, { allowed: [...(cmd.args ?? []).map((a) => a.name)] })
     const args = resolveArgs(cmd.args ?? [], flags, env)
     const ctx = makeCtx(args, flags)
+    // 纯参数校验在登录 / 网络之前做,缺参立即返回 USAGE(exit 2)
+    cmd.validate?.(ctx.args)
 
     if (cmd.sideEffect && (!g.confirm || g["dry-run"])) {
       const plan = { command: cmd.name, ...(cmd.plan ? cmd.plan(ctx) : {}), args: scrub(args) }
