@@ -348,6 +348,7 @@ export interface RunResult { exitCode: number; stdout: string; stderr: string }
 
 export async function run(argv: string[], env = process.env): Promise<RunResult> {
   const started = Date.now()
+  const startupMs = Math.round(performance.now())
   const { path, flags } = parseArgv(argv)
   let g: Record<string, any> = {}
   let json = false
@@ -369,6 +370,9 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
     transportOptions.retries = Math.max(0, Math.floor(g.retries ?? 2))
     if (g.timeout !== undefined) transportOptions.timeoutMs = g.timeout
     transportOptions.verbose = !!g.verbose
+    transportOptions.trace = !!g.trace
+    if (g["hedge-ms"] !== undefined) transportOptions.hedgeMs = Math.max(0, Number(g["hedge-ms"]) || 0)
+    if (transportOptions.trace) stats.trace = []
     if (g.verbose) process.env.YSU_CLI_VERBOSE = "1"
 
     if (path.length === 0 || path[0] === "help") {
@@ -401,6 +405,7 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
       return emit(payload, `[dry-run] ${JSON.stringify(plan, null, 2)}\n加 --confirm 才会真正执行。`, EXIT_CODES.DRY_RUN)
     }
 
+    const bootStart = performance.now()
     if (cmd.capability) {
       const p = await bootProvider()
       if (p.capabilities?.[cmd.capability] !== true) throw new CliError("FEATURE_NOT_SUPPORTED", `当前学校不支持 ${cmd.capability}`)
@@ -411,6 +416,7 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
       if (!useAuthStore.getState().isAuthenticated) throw new CliError("AUTH_REQUIRED", "尚未登录", { next: "ysu auth login --username <学号> --password-stdin --remember" })
     }
 
+    const bootMs = Math.round(performance.now() - bootStart)
     let data: any
     let relogged = false
     for (;;) {
@@ -430,6 +436,8 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
 
     const meta: any = { durationMs: Date.now() - started, httpRequests: stats.requests, retries: stats.retries }
     if (relogged) meta.relogged = true
+    if (stats.hedged) meta.hedged = stats.hedged
+    if (transportOptions.trace) meta.trace = buildTrace(startupMs, bootMs)
     if (Array.isArray(data) && (cmd.paged || g.limit !== undefined || g.offset)) {
       const r = paginate(data, g.offset, g.limit)
       data = r.items
@@ -445,6 +453,18 @@ export async function run(argv: string[], env = process.env): Promise<RunResult>
   } finally {
     try { flush() } catch { /* ignore */ }
   }
+}
+
+function buildTrace(startupMs: number, sessionRestoreMs: number) {
+  const reqs = stats.trace
+  const byHost: Record<string, { count: number; totalMs: number; maxMs: number }> = {}
+  for (const r of reqs) {
+    const h = (byHost[r.host] ??= { count: 0, totalMs: 0, maxMs: 0 })
+    h.count++
+    h.totalMs += r.ms
+    h.maxMs = Math.max(h.maxMs, r.ms)
+  }
+  return { processStartupMs: startupMs, sessionRestoreMs, totalMs: Math.round(performance.now()), requests: reqs, byHost }
 }
 
 export function paginate<T>(all: T[], offsetIn?: number, limitIn?: number) {

@@ -12,6 +12,9 @@ export interface TransportOptions {
   retries: number
   userAgent: string
   verbose: boolean
+  trace: boolean
+  /** 只读请求超过这么多毫秒没响应就并发补发一次(0 关闭);只作用于 HEDGE_SAFE 白名单 */
+  hedgeMs: number
 }
 
 export const transportOptions: TransportOptions = {
@@ -19,9 +22,65 @@ export const transportOptions: TransportOptions = {
   userAgent:
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
   verbose: false,
+  trace: false,
+  hedgeMs: 2500,
 }
 
-export const stats = { requests: 0, retries: 0 }
+export interface TraceEntry { method: string; host: string; path: string; status: number | null; startMs: number; ms: number; attempt: number; hedged?: boolean }
+export const stats: { requests: number; retries: number; hedged: number; trace: TraceEntry[] } = { requests: 0, retries: 0, hedged: 0, trace: [] }
+
+/** 可以安全并发补发的纯查询接口(签到 signin/sign 等写接口不在其中) */
+export const HEDGE_SAFE = [
+  /\/jwmobile\/biz\/v410\/signin\/detail$/,
+  /\/jwmobile\/biz\/v410\/signin\/querySigninDetail$/,
+  /\/jwmobile\/biz\/v410\/lesson\/queryCurrentLesson$/,
+]
+
+export function isHedgeSafe(url: string): boolean {
+  try {
+    const p = new URL(url).pathname
+    return HEDGE_SAFE.some((r) => r.test(p))
+  } catch {
+    return false
+  }
+}
+
+export const fetchImpl: { fetch: typeof fetch } = { fetch: (...a) => globalThis.fetch(...a) }
+
+/** 先发一次;hedgeMs 内没有响应头就再发一次,取先返回的,另一个中止。 */
+export function hedgedFetch(url: string, init: RequestInit, hedgeMs: number): Promise<Response> {
+  if (!(hedgeMs > 0)) return fetchImpl.fetch(url, init)
+  const outer = init.signal ?? undefined
+  const ctrls: AbortController[] = []
+  const attempt = () => {
+    const c = new AbortController()
+    ctrls.push(c)
+    const signal = outer ? AbortSignal.any([outer, c.signal]) : c.signal
+    return fetchImpl.fetch(url, { ...init, signal }).then((resp) => ({ resp, c }))
+  }
+  return new Promise((resolve, reject) => {
+    let isDone = false
+    let pending = 1
+    const settle = ({ resp, c }: { resp: Response; c: AbortController }) => {
+      if (isDone) { resp.body?.cancel().catch(() => {}); return }
+      isDone = true
+      clearTimeout(timer)
+      for (const x of ctrls) if (x !== c) x.abort()
+      resolve(resp)
+    }
+    const fail = (e: unknown) => {
+      if (--pending === 0 && !isDone) { isDone = true; clearTimeout(timer); reject(e) }
+    }
+    attempt().then(settle, fail)
+    const timer = setTimeout(() => {
+      if (isDone) return
+      pending++
+      stats.hedged++
+      attempt().then(settle, fail)
+    }, hedgeMs)
+    timer.unref?.()
+  })
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -64,13 +123,13 @@ export async function nodeHttpSend(jar: SimpleCookieJar, req: HttpRequest): Prom
     const started = Date.now()
     try {
       stats.requests++
-      const resp = await fetch(req.url.split("#")[0]!, {
-        method: req.method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: AbortSignal.any(signals),
-      })
+      const url = req.url.split("#")[0]!
+      const init: RequestInit = { method: req.method, headers, body, redirect: "manual", signal: AbortSignal.any(signals) }
+      const resp = isHedgeSafe(url) ? await hedgedFetch(url, init, transportOptions.hedgeMs) : await fetchImpl.fetch(url, init)
+      if (transportOptions.trace) {
+        const u = new URL(url)
+        stats.trace.push({ method: req.method, host: u.hostname, path: u.pathname, status: resp.status, startMs: Math.round(started - performance.timeOrigin), ms: Date.now() - started, attempt })
+      }
       if (transportOptions.verbose) {
         process.stderr.write(`[http] ${req.method} ${redactUrl(req.url)} -> ${resp.status} ${Date.now() - started}ms\n`)
       }

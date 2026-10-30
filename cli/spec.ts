@@ -42,6 +42,8 @@ export const GLOBAL_FLAGS: ArgSpec[] = [
   { name: "confirm", type: "boolean", description: "真正执行有副作用的命令(否则为 dry-run)" },
   { name: "dry-run", type: "boolean", description: "强制 dry-run(优先于 --confirm)" },
   { name: "no-relogin", type: "boolean", description: "会话过期时不使用已记住的密码自动重登" },
+  { name: "trace", type: "boolean", env: "YSU_CLI_TRACE", description: "在 meta.trace 里输出耗时分解(进程启动、会话恢复、每个 HTTP 请求的主机/路径/状态/耗时;不含参数与 cookie)" },
+  { name: "hedge-ms", type: "number", env: "YSU_CLI_HEDGE_MS", default: 2500, description: "签到查询类只读接口超过这么多毫秒没响应就并发补发一次(0 关闭;签到本身从不补发)" },
   { name: "verbose", type: "boolean", env: "YSU_CLI_VERBOSE", description: "把 HTTP 摘要日志写到 stderr(URL 中的敏感参数已打码,不含 cookie)" },
   { name: "home", type: "string", env: "YSU_CLI_HOME", description: "状态目录,默认 ~/.config/ysu-cli(目录 0700,state.json 0600)" },
   { name: "help", type: "boolean", description: "显示帮助" },

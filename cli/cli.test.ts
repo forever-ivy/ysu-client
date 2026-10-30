@@ -422,3 +422,63 @@ describe("Codex 审查修复(第二轮)", () => {
     return expect(promise).resolves.toBe(1)
   })
 })
+
+describe("签到提速", () => {
+  it("只有签到查询类接口可以并发补发,签到本身不行", async () => {
+    const { isHedgeSafe } = await import("./transport")
+    expect(isHedgeSafe("https://jwxt.ysu.edu.cn/jwmobile/biz/v410/signin/detail")).toBe(true)
+    expect(isHedgeSafe("https://jwxt.ysu.edu.cn/jwmobile/biz/v410/signin/querySigninDetail")).toBe(true)
+    expect(isHedgeSafe("https://jwxt.ysu.edu.cn/jwmobile/biz/v410/lesson/queryCurrentLesson")).toBe(true)
+    expect(isHedgeSafe("https://jwxt.ysu.edu.cn/jwmobile/biz/v410/signin/sign")).toBe(false)
+    expect(isHedgeSafe("https://cer.ysu.edu.cn/authserver/login")).toBe(false)
+  })
+
+  it("慢请求被补发,先返回的结果胜出,慢的被中止", async () => {
+    const { hedgedFetch, fetchImpl } = await import("./transport")
+    const orig = fetchImpl.fetch
+    let calls = 0
+    let isAborted = false
+    fetchImpl.fetch = ((_u: any, init: any) => {
+      calls++
+      if (calls === 1) return new Promise((_r, rej) => init.signal.addEventListener("abort", () => { isAborted = true; rej(new Error("aborted")) }))
+      return Promise.resolve(new Response("fast"))
+    }) as any
+    try {
+      const r = await hedgedFetch("https://x/a", { method: "POST" }, 20)
+      expect(await r.text()).toBe("fast")
+      expect(calls).toBe(2)
+      await new Promise((r) => setTimeout(r, 5))
+      expect(isAborted).toBe(true)
+    } finally {
+      fetchImpl.fetch = orig
+    }
+  })
+
+  it("快请求不会补发", async () => {
+    const { hedgedFetch, fetchImpl } = await import("./transport")
+    const orig = fetchImpl.fetch
+    let calls = 0
+    fetchImpl.fetch = (async () => { calls++; return new Response("ok") }) as any
+    try {
+      await hedgedFetch("https://x/a", { method: "POST" }, 30)
+      await new Promise((r) => setTimeout(r, 50))
+      expect(calls).toBe(1)
+    } finally {
+      fetchImpl.fetch = orig
+    }
+  })
+
+  it("--trace 给出耗时分解,不含查询参数", async () => {
+    const r = await J(["auth", "status", "--trace"])
+    expect(r.body.ok).toBe(true)
+    expect(r.body.meta.trace.processStartupMs).toBeGreaterThanOrEqual(0)
+    expect(Array.isArray(r.body.meta.trace.requests)).toBe(true)
+  })
+
+  it("signin check / prepare 是只读命令,signin sign 仍默认 dry-run", async () => {
+    expect(findCommand(["signin", "check"]).cmd?.sideEffect).toBeFalsy()
+    expect(findCommand(["signin", "prepare"]).cmd?.sideEffect).toBeFalsy()
+    const r = await J(["signin", "sign", "--activity-id", "1"])
+    expect(r.body.error.code).toBe("DRY_RUN")
+  })
+})

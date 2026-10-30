@@ -421,6 +421,30 @@ export const COMMANDS: Command[] = [
   { name: "signin detail", summary: "签到活动详情", auth: true, capability: "mobileSignin", args: [s("activity-id", "签到活动 ID", { required: true })], async run(ctx) { const p = await P(ctx); if (!p.mobile) throw notSupported("移动端签到不可用"); return p.mobile.getSigninDetail({ activityId: ctx.args["activity-id"] }) } },
   { name: "signin status", summary: "我的签到状态", auth: true, capability: "mobileSignin", args: [s("activity-id", "签到活动 ID", { required: true })], async run(ctx) { const p = await P(ctx); if (!p.mobile) throw notSupported("移动端签到不可用"); return p.mobile.getStudentSigninStatus({ activityId: ctx.args["activity-id"] }) } },
   {
+    name: "signin check", summary: "签到前检查:并行查询签到活动详情和我的签到状态(只读)", auth: true, capability: "mobileSignin",
+    args: [s("activity-id", "签到活动 ID", { required: true })],
+    async run(ctx) {
+      const p = await P(ctx); if (!p.mobile) throw notSupported("移动端签到不可用")
+      const input = { activityId: ctx.args["activity-id"] }
+      const [detail, status] = await Promise.all([p.mobile.getSigninDetail(input), p.mobile.getStudentSigninStatus(input)])
+      return { detail, status }
+    },
+  },
+  {
+    name: "signin prepare", summary: "预热移动端会话:校验 token,过期就提前重新授权,让真正签到只剩一个请求(只读)", auth: true, capability: "mobileSignin",
+    async run(ctx) {
+      await P(ctx)
+      const { useAuthStore } = await import("@/lib/stores/auth")
+      const hadSession = !!useAuthStore.getState().mobileSession
+      const m = await import("@/providers/ysu/protocol/jwmobile")
+      const t = Date.now()
+      await m.ensureMobileAuthorized(true)
+      const { persistMobileSession } = await import("@/providers/ysu/session")
+      await persistMobileSession().catch(() => {})
+      return { ready: true, hadSession, authMs: Date.now() - t }
+    },
+  },
+  {
     name: "signin sign", summary: "执行签到(写操作;定位/签到码)", auth: true, sideEffect: true, capability: "mobileSignin",
     args: [s("activity-id", "签到活动 ID", { required: true }), n("latitude", "纬度"), n("longitude", "经度"), n("accuracy", "定位精度(米)"), s("code", "签到码")],
     plan: (ctx) => ({ action: "doStudentSign", input: { activityId: ctx.args["activity-id"], ...pick(ctx.args, { latitude: "latitude", longitude: "longitude", accuracy: "accuracy", code: "code" }) } }),
